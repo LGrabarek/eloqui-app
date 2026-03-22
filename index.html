@@ -1,0 +1,775 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Eloqui</title>
+    <meta name="description" content="A local-first prompted reading PWA.">
+    
+    <!-- PWA Manifest -->
+    <link rel="manifest" href="manifest.json">
+    
+    <!-- Theme color for PWA -->
+    <meta name="theme-color" content="#ffffff"/>
+    
+    <!-- Favicon and Apple Touch Icon -->
+    <link rel="icon" href="icon-192.png" type="image/png">
+    <link rel="apple-touch-icon" href="icon-192.png">
+
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Pyodide (Python runtime in the browser) -->
+    <script src="https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js"></script>
+
+    <!-- browser-fs-access for native file system access -->
+    <script type="module" src="https://cdn.jsdelivr.net/npm/browser-fs-access@0.35.0/dist/index.modern.js"></script>
+
+    <!-- Chart.js for trend graphs -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <style>
+        /* Custom styles for the application */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f9fafb; /* Light background */
+            color: #1f2937; /* Dark text */
+        }
+        .btn {
+            @apply py-2 px-4 font-semibold rounded-lg shadow-md focus:outline-none focus:ring-2 focus:ring-opacity-75 transition-colors duration-200 cursor-pointer;
+        }
+        .btn:disabled {
+            @apply opacity-50 cursor-not-allowed;
+        }
+        .btn-secondary {
+            @apply bg-gray-600 text-white hover:bg-gray-700 focus:ring-gray-400;
+        }
+        .card {
+            @apply bg-white p-6 rounded-xl shadow-lg border border-gray-200;
+        }
+        .pronounce-word {
+            @apply cursor-pointer hover:underline text-blue-600;
+        }
+    </style>
+</head>
+<body class="flex items-center justify-center min-h-screen">
+
+    <div id="app-container" class="w-full max-w-7xl mx-auto p-4">
+
+        <!-- Initial View: File Selection -->
+        <div id="file-select-view" class="text-center card max-w-4xl mx-auto">
+            <!-- App Icon -->
+            <img src="icon-512.png" alt="Eloqui Logo" class="w-24 h-24 mx-auto mb-4 rounded-2xl shadow-sm">
+            
+            <h1 class="text-4xl font-bold mb-4">Prompted Reading</h1>
+            <p class="text-lg text-gray-600 mb-6">Select language and load the text file.</p>
+            <div class="flex flex-row items-center justify-center space-x-4 mb-8">
+                 <select id="language-select" class="bg-gray-100 text-gray-800 border border-gray-300 rounded-lg py-3 px-4 text-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <option value="en-US">English</option>
+                    <option value="de-DE" selected>German</option>
+                 </select>
+                
+                 <!-- Plain text button, no box -->
+                 <button id="load-file-btn" class="text-xl whitespace-nowrap text-blue-600 underline hover:text-blue-800 disabled:text-gray-400 disabled:no-underline cursor-pointer disabled:cursor-not-allowed bg-transparent border-none p-0" disabled>Load Text File</button>
+            </div>
+            <p id="loading-pyodide" class="mt-4 text-gray-500">Initializing Python runtime...</p>
+            <p id="init-error" class="mt-4 text-red-500 hidden"></p>
+        </div>
+
+        <!-- Reading View -->
+        <div id="reading-view" class="hidden grid grid-cols-1 md:grid-cols-3 gap-6">
+            <!-- Scrolling Text Pane -->
+            <div id="reading-content" class="md:col-span-2 text-3xl leading-relaxed p-4 card whitespace-pre-wrap overflow-y-auto" style="max-height: 80vh;">
+                <!-- Content will be rendered here by JavaScript -->
+            </div>
+
+            <!-- Fixed Control Pane -->
+            <div id="control-pane" class="md:col-span-1 card flex flex-col justify-between">
+                <div id="instructions-view">
+                    <h3 class="text-2xl font-bold mb-4">Instructions</h3>
+                    <p class="text-gray-600 mb-4">Press "Start Listening" and read the text aloud. The app will wait patiently for you. You can click on any word to skip ahead or jump back manually.</p>
+                </div>
+                <div id="summary-view" class="hidden overflow-y-auto">
+                     <h1 class="text-3xl font-bold mb-4">Session Complete</h1>
+                     <div id="summary-content" class="text-sm text-left my-6">
+                         <!-- Summary will be populated here -->
+                     </div>
+                     <div class="mt-4">
+                        <canvas id="trend-chart"></canvas>
+                     </div>
+                </div>
+                
+                <!-- Playback & Session Controls -->
+                <div id="button-controls">
+                    <div id="playback-controls" class="flex flex-col space-y-3 mt-4">
+                        <button id="play-pause-btn" class="btn bg-green-600 text-white hover:bg-green-700 w-full py-4 px-8 text-xl">▶ Start Listening</button>
+                        <button id="end-session-btn" class="btn bg-red-600 text-white hover:bg-red-700 w-full py-3 px-8 text-lg hidden">⏹ End & Summarize</button>
+                    </div>
+
+                    <div id="summary-buttons" class="hidden flex flex-col space-y-3 mt-4">
+                        <button id="retry-btn" class="btn bg-blue-600 text-white hover:bg-blue-700 w-full text-xl">Retry Same Text</button>
+                        <button id="new-file-btn" class="btn btn-secondary w-full text-xl">Choose New Text</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Embedded Python Application Logic -->
+    <script id="python-code" type="text/python">
+import re
+import json
+from collections import defaultdict
+
+# --- Utility Functions ---
+def clean_word(word):
+    """Removes punctuation and converts to lowercase for comparison."""
+    return re.sub(r'[^\w]', '', word, re.UNICODE).lower()
+
+def levenshtein_distance(s1, s2):
+    """Calculates the Levenshtein distance between two strings."""
+    if len(s1) < len(s2):
+        return levenshtein_distance(s2, s1)
+    if len(s2) == 0:
+        return len(s1)
+    
+    previous_row = range(len(s2) + 1)
+    for i, c1 in enumerate(s1):
+        current_row = [i + 1]
+        for j, c2 in enumerate(s2):
+            insertions = previous_row[j + 1] + 1
+            deletions = current_row[j] + 1
+            substitutions = previous_row[j] + (c1 != c2)
+            current_row.append(min(insertions, deletions, substitutions))
+        previous_row = current_row
+    return previous_row[-1]
+
+# --- State Management ---
+def get_initial_app_state():
+    return {
+        "current_session": None,
+        "session_history": [],
+    }
+
+def get_initial_session_state():
+    return {
+        "original_text": "",
+        "text_elements": [],
+        "processing_words": [],
+        "spoken_transcript_map": {}, 
+        "word_map": [],
+        "user_position_index": 0,
+        "is_listening": False,
+        "session_complete": False,
+        "summary_data": None
+    }
+
+# --- Core Application Logic ---
+class AppController:
+    def __init__(self):
+        self.state = get_initial_app_state()
+
+    def _generate_summary(self, save_to_history=True):
+        session = self.state["current_session"]
+        if not session or session["session_complete"]:
+            return None
+
+        error_counts = {"minor": 0, "moderate": 0, "major": 0}
+        color_updates = []
+        all_errors = []
+        
+        for i in range(session["user_position_index"]):
+            target_word = session["processing_words"][i]
+            # Missing spoken words (due to skip/override) are scored as empty strings, creating max penalty
+            spoken_word = session["spoken_transcript_map"].get(i, "")
+            distance = levenshtein_distance(spoken_word, target_word)
+            
+            color_updates.append({"word_index": session["word_map"][i], "level": distance})
+
+            if distance > 0:
+                original_word = session["text_elements"][session["word_map"][i]]
+                all_errors.append({"original": original_word, "spoken": spoken_word, "distance": distance})
+                if distance == 1: error_counts["minor"] += 1
+                elif 2 <= distance <= 3: error_counts["moderate"] += 1
+                else: error_counts["major"] += 1
+        
+        sorted_errors = sorted(all_errors, key=lambda x: x["distance"], reverse=True)
+        top_5_errors = sorted_errors[:5]
+
+        summary = {"error_counts": error_counts, "top_5_errors": top_5_errors}
+        history = self.state["session_history"]
+
+        if history:
+            last_errors = history[-1]["error_counts"]
+            changes = {}
+            for key in error_counts:
+                old_val, new_val = last_errors.get(key, 0), error_counts.get(key, 0)
+                if old_val > 0:
+                    changes[f"{key}_change"] = round(((new_val - old_val) / old_val) * 100, 1)
+                elif new_val > 0:
+                    changes[f"{key}_change"] = 100.0
+                else:
+                    changes[f"{key}_change"] = 0.0
+            summary["changes"] = changes
+
+        if save_to_history:
+            history.append(summary)
+        
+        session["summary_data"] = summary
+        session["session_complete"] = True
+        session["is_listening"] = False
+        
+        return {"summary_data": summary, "session_history": history, "color_updates": color_updates}
+
+    def start_new_session(self, text):
+        session_state = get_initial_session_state()
+        session_state["original_text"] = text
+
+        text_elements = re.split(r'(\s+)', text)
+        processing_words, word_map = [], []
+
+        for i, element in enumerate(text_elements):
+            if element and not element.isspace():
+                processing_words.append(clean_word(element))
+                word_map.append(i)
+        
+        session_state.update({
+            "text_elements": text_elements,
+            "processing_words": processing_words,
+            "word_map": word_map,
+        })
+        self.state["current_session"] = session_state
+        
+        initial_target = word_map[0] if word_map else None
+        return json.dumps({"view": "reading", "initial_render_data": session_state, "initial_target": initial_target})
+
+    def manual_override(self, text_element_index):
+        session = self.state["current_session"]
+        if not session or session["session_complete"]: 
+            return json.dumps([])
+            
+        try:
+            new_pos = session["word_map"].index(text_element_index)
+        except ValueError:
+            return json.dumps([]) 
+            
+        pos = session["user_position_index"]
+        updates = []
+        
+        if new_pos > pos:
+            # Moved forward: Treat skipped words as maximum error
+            for skipped_pos in range(pos, new_pos):
+                if skipped_pos in session["spoken_transcript_map"]:
+                    del session["spoken_transcript_map"][skipped_pos] # Delete key enforces max error on summary
+                updates.append({"type": "mark_skipped", "word_index": session["word_map"][skipped_pos]})
+        elif new_pos < pos:
+            # Moved backward: Erase previously recorded attempts
+            for reset_pos in range(new_pos, pos):
+                if reset_pos in session["spoken_transcript_map"]:
+                    del session["spoken_transcript_map"][reset_pos]
+                updates.append({"type": "mark_reset", "word_index": session["word_map"][reset_pos]})
+                
+        session["user_position_index"] = new_pos
+        updates.append({"type": "set_target", "word_index": session["word_map"][new_pos]})
+        
+        return json.dumps(updates)
+
+    def process_transcript(self, transcript):
+        session = self.state["current_session"]
+        if not session or session["session_complete"]: 
+            return json.dumps([])
+
+        updates = []
+        spoken_words = [clean_word(w) for w in transcript.split() if w]
+        
+        spoken_idx = 0
+        while spoken_idx < len(spoken_words):
+            pos = session["user_position_index"]
+            if pos >= len(session["processing_words"]): break
+
+            target_word = session["processing_words"][pos]
+            threshold = max(1, len(target_word) // 2)
+
+            best_match = {"distance": float('inf'), "parts": 0, "word": ""}
+            
+            for num_parts in range(min(3, len(spoken_words) - spoken_idx), 0, -1):
+                combined = "".join(spoken_words[spoken_idx : spoken_idx + num_parts])
+                distance = levenshtein_distance(combined, target_word)
+                if distance < best_match["distance"]:
+                    best_match["distance"] = distance
+                    best_match["parts"] = num_parts
+                    best_match["word"] = combined
+            
+            if best_match["distance"] <= threshold:
+                session["spoken_transcript_map"][pos] = best_match["word"]
+                session["user_position_index"] += 1
+                updates.append({"type": "mark_correct", "word_index": session["word_map"][pos]})
+                spoken_idx += best_match["parts"]
+            else:
+                # Smart Catch-Up Logic
+                catch_up_found = False
+                for lookahead in range(1, 4): # Look up to 3 words ahead
+                    future_pos = pos + lookahead
+                    if future_pos >= len(session["processing_words"]):
+                        break
+                    
+                    future_target = session["processing_words"][future_pos]
+                    future_threshold = max(1, len(future_target) // 2)
+                    
+                    for num_parts in range(min(3, len(spoken_words) - spoken_idx), 0, -1):
+                        combined = "".join(spoken_words[spoken_idx : spoken_idx + num_parts])
+                        dist = levenshtein_distance(combined, future_target)
+                        
+                        if dist <= future_threshold:
+                            # Catch up to future word, leaving intermediate words unmapped (max error penalty)
+                            for skipped_pos in range(pos, future_pos):
+                                updates.append({"type": "mark_skipped", "word_index": session["word_map"][skipped_pos]})
+                            
+                            session["spoken_transcript_map"][future_pos] = combined
+                            session["user_position_index"] = future_pos + 1
+                            updates.append({"type": "mark_correct", "word_index": session["word_map"][future_pos]})
+                            spoken_idx += num_parts
+                            catch_up_found = True
+                            break
+                    if catch_up_found:
+                        break
+                
+                if not catch_up_found:
+                    spoken_idx += 1 # Patient Tracker: Ignores incorrect sounds without auto-skipping
+        
+        if session["user_position_index"] >= len(session["processing_words"]):
+            summary = self._generate_summary(save_to_history=True)
+            if summary:
+                updates.append({"type": "session_complete", "data": summary})
+        else:
+            # Emit target to ensure UI highlights correct subsequent word
+            updates.append({"type": "set_target", "word_index": session["word_map"][session["user_position_index"]]})
+
+        return json.dumps(updates)
+    
+    def end_session(self):
+        summary = self._generate_summary(save_to_history=True)
+        return json.dumps([{"type": "session_complete", "data": summary}] if summary else [])
+
+    def toggle_listening(self, should_listen):
+        if self.state["current_session"]:
+            self.state["current_session"]["is_listening"] = bool(should_listen)
+
+    def reset_app(self):
+        self.state = get_initial_app_state()
+        return json.dumps({"view": "file_select"})
+
+    def should_continue_listening(self):
+        return self.state.get("current_session", {}).get("is_listening", False)
+    </script>
+
+    <script type="module">
+        import { fileOpen } from 'https://cdn.jsdelivr.net/npm/browser-fs-access@0.35.0/dist/index.modern.js';
+
+        // --- DOM Element Cache ---
+        const views = {
+            fileSelect: document.getElementById('file-select-view'),
+            reading: document.getElementById('reading-view'),
+        };
+        const buttons = {
+            loadFile: document.getElementById('load-file-btn'),
+            playPause: document.getElementById('play-pause-btn'),
+            endSession: document.getElementById('end-session-btn'),
+            retry: document.getElementById('retry-btn'),
+            newFile: document.getElementById('new-file-btn'),
+        };
+        const languageSelect = document.getElementById('language-select');
+        const readingContent = document.getElementById('reading-content');
+        const summaryContent = document.getElementById('summary-content');
+        const loadingPyodideMsg = document.getElementById('loading-pyodide');
+        const initErrorMsg = document.getElementById('init-error');
+        const instructionsView = document.getElementById('instructions-view');
+        const summaryViewInPane = document.getElementById('summary-view');
+        const playbackControls = document.getElementById('playback-controls');
+        const summaryButtons = document.getElementById('summary-buttons');
+        const trendChartCanvas = document.getElementById('trend-chart');
+
+        // --- App State ---
+        let pyodide = null;
+        let pythonApp = null;
+        let speechRecognition = null;
+        let trendChart = null;
+        let originalTextCache = '';
+        
+        // --- View & Render Management ---
+        function showView(viewName) {
+            Object.values(views).forEach(v => v.classList.add('hidden'));
+            views[viewName]?.classList.remove('hidden');
+        }
+
+        function getColorForErrorLevel(level) {
+            if (level === 0) return '';
+            if (level === 1) return 'bg-yellow-200';
+            if (level >= 2 && level <= 3) return 'bg-orange-300';
+            return 'bg-red-400';
+        }
+
+        function initialRenderReadingContent(renderData) {
+            const { text_elements } = renderData;
+            readingContent.innerHTML = text_elements.map((token, index) => {
+                const isWord = token && !/^\s+$/.test(token);
+                if (isWord) {
+                    return `<span id="word-${index}" data-text-index="${index}" class="reading-word transition-colors duration-200 cursor-pointer hover:bg-gray-100 rounded">${token}</span>`;
+                }
+                return `<span>${token}</span>`;
+            }).join('');
+        }
+        
+        function updateTargetIndicator(wordIndex) {
+            document.querySelectorAll('.target-word').forEach(el => {
+                el.classList.remove('target-word', 'bg-blue-100', 'text-blue-900', 'px-1', 'rounded', 'shadow-sm');
+            });
+            
+            const targetEl = document.getElementById(`word-${wordIndex}`);
+            if (targetEl) {
+                targetEl.classList.add('target-word', 'bg-blue-100', 'text-blue-900', 'px-1', 'rounded', 'shadow-sm');
+                
+                // Teleprompter scrolling
+                const container = document.getElementById('reading-content');
+                const wordRect = targetEl.getBoundingClientRect();
+                const containerRect = container.getBoundingClientRect();
+                
+                const triggerPoint = containerRect.top + (containerRect.height * 0.66);
+                
+                if (wordRect.bottom > triggerPoint || wordRect.top < containerRect.top) {
+                    const targetTopOffset = containerRect.height * 0.33;
+                    container.scrollBy({
+                        top: wordRect.top - containerRect.top - targetTopOffset,
+                        behavior: 'smooth'
+                    });
+                }
+            }
+        }
+        
+        function renderSummary(summaryData, historyData) {
+            const { error_counts, changes, top_5_errors } = summaryData;
+            const formatChange = (change) => {
+                if (change === undefined) return '';
+                const sign = change > 0 ? '+' : '';
+                const color = change > 0 ? 'text-red-500' : 'text-green-500';
+                return `<span class="text-xs ${color}">(${sign}${change}%)</span>`;
+            };
+            let summaryHTML = `
+                <div class="grid grid-cols-[max-content,1fr] gap-x-4 gap-y-2 items-center">
+                    <span>Minor Errors:</span> <div class="text-right"><strong>${error_counts.minor}</strong> ${changes ? formatChange(changes.minor_change) : ''}</div>
+                    <span>Moderate Errors:</span> <div class="text-right"><strong>${error_counts.moderate}</strong> ${changes ? formatChange(changes.moderate_change) : ''}</div>
+                    <span>Major Errors:</span> <div class="text-right"><strong>${error_counts.major}</strong> ${changes ? formatChange(changes.major_change) : ''}</div>
+                </div>`;
+            
+            if (top_5_errors && top_5_errors.length > 0) {
+                summaryHTML += '<h4 class="font-bold text-center mt-6 mb-2">Most Severe Errors</h4>';
+                summaryHTML += '<div class="grid grid-cols-[1fr,auto,1fr] gap-x-2 text-xs text-gray-500 border-b pb-1 mb-1 font-semibold"><span>Original</span><span>Listen</span><span>Transcribed</span></div>';
+                summaryHTML += '<div class="space-y-1">';
+                top_5_errors.forEach(err => {
+                    summaryHTML += `<div class="grid grid-cols-[1fr,auto,1fr] gap-x-2 py-1 text-xs border-b border-gray-100 items-center"><span>${err.original}</span><span class="pronounce-word text-center" data-word="${err.original}">🔊</span><span class="text-red-600">${err.spoken || "[MISSED]"}</span></div>`;
+                });
+                summaryHTML += '</div>';
+            }
+
+            summaryContent.innerHTML = summaryHTML;
+            if (historyData?.length > 0) renderTrendChart(historyData);
+        }
+
+        function renderTrendChart(history) {
+            if (trendChart) trendChart.destroy();
+            const datasets = [
+                { label: 'Minor', data: history.map(s => s.error_counts.minor), borderColor: 'rgb(250, 204, 21)', tension: 0.1 },
+                { label: 'Moderate', data: history.map(s => s.error_counts.moderate), borderColor: 'rgb(251, 146, 60)', tension: 0.1 },
+                { label: 'Major', data: history.map(s => s.error_counts.major), borderColor: 'rgb(239, 68, 68)', tension: 0.1 }
+            ];
+            trendChart = new Chart(trendChartCanvas, {
+                type: 'line',
+                data: {
+                    labels: history.map((_, i) => `S${i + 1}`),
+                    datasets: datasets
+                },
+                options: { scales: { y: { beginAtZero: true, suggestedMax: 10 } }, plugins: { legend: { position: 'top', labels: { boxWidth: 10 } } } }
+            });
+        }
+        
+        function showSummaryView() {
+            instructionsView.classList.add('hidden');
+            summaryViewInPane.classList.remove('hidden');
+            playbackControls.classList.add('hidden');
+            summaryButtons.classList.remove('hidden');
+        }
+        
+        function showInstructionsView() {
+            instructionsView.classList.remove('hidden');
+            summaryViewInPane.classList.add('hidden');
+            playbackControls.classList.remove('hidden');
+            summaryButtons.classList.add('hidden');
+            
+            // Reset Play Button UI
+            buttons.playPause.innerHTML = '▶ Start Listening';
+            buttons.playPause.classList.replace('bg-yellow-500', 'bg-green-600');
+            buttons.playPause.classList.replace('hover:bg-yellow-600', 'hover:bg-green-700');
+            buttons.endSession.classList.add('hidden');
+        }
+
+        function processUpdates(updates) {
+            if (!updates || !Array.isArray(updates)) return;
+            
+            let newTargetIndex = null;
+            for (const update of updates) {
+                if (!update) continue;
+                switch (update.type) {
+                    case 'mark_correct':
+                        const correctEl = document.getElementById(`word-${update.word_index}`);
+                        if (correctEl) {
+                           correctEl.classList.add('font-bold');
+                           correctEl.classList.remove('text-gray-400');
+                        }
+                        break;
+                    case 'mark_skipped':
+                        const skipEl = document.getElementById(`word-${update.word_index}`);
+                        if (skipEl) {
+                           skipEl.classList.remove('font-bold');
+                           skipEl.classList.add('text-gray-400');
+                        }
+                        break;
+                    case 'mark_reset':
+                        const resetEl = document.getElementById(`word-${update.word_index}`);
+                        if (resetEl) {
+                           resetEl.classList.remove('font-bold', 'text-gray-400');
+                        }
+                        break;
+                    case 'set_target':
+                        newTargetIndex = update.word_index;
+                        break;
+                    case 'session_complete':
+                        handleSessionEnd(update.data);
+                        return; // Prevent setting targets when complete
+                }
+            }
+            if (newTargetIndex !== null) {
+                updateTargetIndicator(newTargetIndex);
+            }
+        }
+        
+        function handleSessionEnd(data) {
+             pythonApp.toggle_listening(false);
+             if (speechRecognition) {
+                 try { speechRecognition.stop(); } catch(e) {}
+             }
+             renderSummary(data.summary_data, data.session_history);
+             data.color_updates.forEach(colorUpdate => {
+                 const colorEl = document.getElementById(`word-${colorUpdate.word_index}`);
+                 if (colorEl) {
+                     const colorClass = getColorForErrorLevel(colorUpdate.level);
+                     if (colorClass) colorEl.classList.add(colorClass);
+                 }
+             });
+             showSummaryView();
+        }
+        
+        // --- Speech Recognition (Chrome Optimized) ---
+        function setupSpeechRecognition() {
+            // Exclusively targeting Chrome's webkit engine
+            if (!window.webkitSpeechRecognition) {
+                initErrorMsg.textContent = "Error: This application requires Google Chrome to run the Speech Recognition engine.";
+                initErrorMsg.classList.remove('hidden'); loadingPyodideMsg.classList.add('hidden');
+                buttons.loadFile.disabled = true; return false;
+            }
+            
+            speechRecognition = new window.webkitSpeechRecognition();
+            speechRecognition.continuous = true;
+            speechRecognition.interimResults = true;
+            speechRecognition.maxAlternatives = 1;
+            
+            let lastProcessedTranscript = '';
+
+            speechRecognition.onresult = (event) => {
+                if (!pythonApp.should_continue_listening()) return;
+
+                let transcript = '';
+                for (let i = 0; i < event.results.length; ++i) {
+                    transcript += event.results[i][0].transcript;
+                }
+
+                const isFinal = event.results[event.results.length - 1].isFinal;
+                
+                let stablePart;
+                if (isFinal) {
+                    stablePart = transcript;
+                } else {
+                    const lastSpace = transcript.lastIndexOf(' ');
+                    stablePart = (lastSpace === -1) ? '' : transcript.substring(0, lastSpace);
+                }
+
+                if (stablePart.length > lastProcessedTranscript.length) {
+                    const toProcess = stablePart.substring(lastProcessedTranscript.length);
+                    if(toProcess.trim()){
+                         const updatesJsonString = pythonApp.process_transcript(toProcess.trim());
+                         processUpdates(JSON.parse(updatesJsonString));
+                    }
+                    lastProcessedTranscript = stablePart;
+                }
+                
+                if (isFinal) {
+                    lastProcessedTranscript = ''; 
+                }
+            };
+            
+            speechRecognition.onerror = (e) => { 
+                console.error('Speech recognition error', e.error);
+                // Handle silent dropouts if still meant to be listening
+                if (pythonApp.should_continue_listening() && e.error !== 'aborted') {
+                   setTimeout(() => { try { speechRecognition.start(); } catch(err) {} }, 100);
+                }
+            };
+            
+            speechRecognition.onend = () => {
+                if(pythonApp?.should_continue_listening()) { 
+                    setTimeout(() => { try { speechRecognition.start(); } catch(err) {} }, 50);
+                }
+            };
+            return true;
+        }
+
+        function speakWord(word) {
+            speechSynthesis.cancel();
+            const utterance = new SpeechSynthesisUtterance(word);
+            utterance.lang = languageSelect.value;
+            speechSynthesis.speak(utterance);
+        }
+
+        // --- Playback Controls Logic ---
+        function togglePlayPause() {
+            if (!speechRecognition || !pythonApp) return;
+
+            const isCurrentlyListening = pythonApp.should_continue_listening();
+
+            if (isCurrentlyListening) {
+                // Action: Pause
+                pythonApp.toggle_listening(false);
+                try { speechRecognition.stop(); } catch(e) {}
+                
+                buttons.playPause.innerHTML = '▶ Resume Listening';
+                buttons.playPause.classList.replace('bg-yellow-500', 'bg-green-600');
+                buttons.playPause.classList.replace('hover:bg-yellow-600', 'hover:bg-green-700');
+            } else {
+                // Action: Play
+                pythonApp.toggle_listening(true);
+                try { speechRecognition.start(); } catch(e) {}
+                
+                buttons.playPause.innerHTML = '⏸ Pause';
+                buttons.playPause.classList.replace('bg-green-600', 'bg-yellow-500');
+                buttons.playPause.classList.replace('hover:bg-green-700', 'hover:bg-yellow-600');
+                buttons.endSession.classList.remove('hidden');
+            }
+        }
+
+        function finishSessionManually() {
+            pythonApp.toggle_listening(false);
+            if (speechRecognition) {
+                try { speechRecognition.stop(); } catch(e) {}
+            }
+            const updatesJsonString = pythonApp.end_session();
+            processUpdates(JSON.parse(updatesJsonString));
+        }
+
+        // --- Event Handlers & Main Logic ---
+        function startSessionFromText(text) {
+            originalTextCache = text;
+            speechRecognition.lang = languageSelect.value;
+
+            const resultJsonString = pythonApp.start_new_session(text);
+            const result = JSON.parse(resultJsonString);
+
+            showView(result.view);
+            initialRenderReadingContent(result.initial_render_data);
+            
+            if (result.initial_target !== null) {
+                setTimeout(() => updateTargetIndicator(result.initial_target), 50);
+            }
+            
+            showInstructionsView();
+        }
+        
+        // Manual Override Click Handler
+        readingContent.addEventListener('click', (e) => {
+            if (e.target.classList.contains('reading-word')) {
+                const index = parseInt(e.target.dataset.textIndex, 10);
+                if (!isNaN(index) && pythonApp) {
+                    const updatesJsonString = pythonApp.manual_override(index);
+                    processUpdates(JSON.parse(updatesJsonString));
+                }
+            }
+        });
+
+        summaryContent.addEventListener('click', (e) => {
+            if (e.target.classList.contains('pronounce-word')) {
+                speakWord(e.target.dataset.word);
+            }
+        });
+
+        buttons.loadFile.addEventListener('click', async () => {
+            initErrorMsg.classList.add('hidden');
+            try {
+                const file = await fileOpen({ 
+                    mimeTypes: ['text/plain', 'text/markdown'], 
+                    extensions: ['.txt', '.md'] 
+                });
+                const text = await file.text();
+                startSessionFromText(text);
+            } catch (err) { 
+                console.log('File open cancelled or failed:', err);
+                if (err.name !== 'AbortError') {
+                    initErrorMsg.textContent = "Failed to load the file. Please try again.";
+                    initErrorMsg.classList.remove('hidden');
+                }
+            }
+        });
+
+        buttons.newFile.addEventListener('click', () => location.reload());
+        
+        buttons.retry.addEventListener('click', () => {
+            if (originalTextCache) {
+                startSessionFromText(originalTextCache);
+            }
+        });
+
+        // Attach new Playback handlers
+        buttons.playPause.addEventListener('click', togglePlayPause);
+        buttons.endSession.addEventListener('click', finishSessionManually);
+
+        async function main() {
+            try {
+                pyodide = await loadPyodide();
+                loadingPyodideMsg.textContent = "Loading application code...";
+                pyodide.runPython(document.getElementById('python-code').textContent);
+                const AppController = pyodide.globals.get('AppController');
+                pythonApp = AppController();
+                
+                if (setupSpeechRecognition()) {
+                    loadingPyodideMsg.style.display = 'none';
+                    buttons.loadFile.disabled = false;
+                }
+                showView('fileSelect');
+            } catch (error) {
+                console.error('Initialization failed:', error);
+                loadingPyodideMsg.classList.add('hidden');
+                initErrorMsg.textContent = "Error loading application. Please reload.";
+                initErrorMsg.classList.remove('hidden');
+            }
+        }
+        
+        // Service Worker Registration
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('service-worker.js')
+                    .then(reg => console.log('Service worker registered successfully.'))
+                    .catch(err => console.error('Service worker registration failed:', err));
+            });
+        }
+
+        main();
+    </script>
+</body>
+</html>

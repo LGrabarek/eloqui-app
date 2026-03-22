@@ -12,9 +12,9 @@
     <!-- Theme color for PWA -->
     <meta name="theme-color" content="#ffffff"/>
     
-    <!-- Favicon and Apple Touch Icon -->
-    <link rel="icon" href="icon-192.png" type="image/png">
-    <link rel="apple-touch-icon" href="icon-192.png">
+    <!-- Favicon and Apple Touch Icon - Added sizes and cache-buster -->
+    <link rel="icon" href="icon-192.png?v=3" type="image/png" sizes="192x192">
+    <link rel="apple-touch-icon" href="icon-192.png?v=3">
 
     <!-- Tailwind CSS for styling -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -180,7 +180,6 @@ class AppController:
         
         for i in range(session["user_position_index"]):
             target_word = session["processing_words"][i]
-            # Missing spoken words (due to skip/override) are scored as empty strings, creating max penalty
             spoken_word = session["spoken_transcript_map"].get(i, "")
             distance = levenshtein_distance(spoken_word, target_word)
             
@@ -257,13 +256,11 @@ class AppController:
         updates = []
         
         if new_pos > pos:
-            # Moved forward: Treat skipped words as maximum error
             for skipped_pos in range(pos, new_pos):
                 if skipped_pos in session["spoken_transcript_map"]:
-                    del session["spoken_transcript_map"][skipped_pos] # Delete key enforces max error on summary
+                    del session["spoken_transcript_map"][skipped_pos]
                 updates.append({"type": "mark_skipped", "word_index": session["word_map"][skipped_pos]})
         elif new_pos < pos:
-            # Moved backward: Erase previously recorded attempts
             for reset_pos in range(new_pos, pos):
                 if reset_pos in session["spoken_transcript_map"]:
                     del session["spoken_transcript_map"][reset_pos]
@@ -306,9 +303,8 @@ class AppController:
                 updates.append({"type": "mark_correct", "word_index": session["word_map"][pos]})
                 spoken_idx += best_match["parts"]
             else:
-                # Smart Catch-Up Logic
                 catch_up_found = False
-                for lookahead in range(1, 4): # Look up to 3 words ahead
+                for lookahead in range(1, 4):
                     future_pos = pos + lookahead
                     if future_pos >= len(session["processing_words"]):
                         break
@@ -321,7 +317,6 @@ class AppController:
                         dist = levenshtein_distance(combined, future_target)
                         
                         if dist <= future_threshold:
-                            # Catch up to future word, leaving intermediate words unmapped (max error penalty)
                             for skipped_pos in range(pos, future_pos):
                                 updates.append({"type": "mark_skipped", "word_index": session["word_map"][skipped_pos]})
                             
@@ -335,14 +330,13 @@ class AppController:
                         break
                 
                 if not catch_up_found:
-                    spoken_idx += 1 # Patient Tracker: Ignores incorrect sounds without auto-skipping
+                    spoken_idx += 1 
         
         if session["user_position_index"] >= len(session["processing_words"]):
             summary = self._generate_summary(save_to_history=True)
             if summary:
                 updates.append({"type": "session_complete", "data": summary})
         else:
-            # Emit target to ensure UI highlights correct subsequent word
             updates.append({"type": "set_target", "word_index": session["word_map"][session["user_position_index"]]})
 
         return json.dumps(updates)
@@ -366,7 +360,6 @@ class AppController:
     <script type="module">
         import { fileOpen } from 'https://cdn.jsdelivr.net/npm/browser-fs-access@0.35.0/dist/index.modern.js';
 
-        // --- DOM Element Cache ---
         const views = {
             fileSelect: document.getElementById('file-select-view'),
             reading: document.getElementById('reading-view'),
@@ -389,14 +382,12 @@ class AppController:
         const summaryButtons = document.getElementById('summary-buttons');
         const trendChartCanvas = document.getElementById('trend-chart');
 
-        // --- App State ---
         let pyodide = null;
         let pythonApp = null;
         let speechRecognition = null;
         let trendChart = null;
         let originalTextCache = '';
         
-        // --- View & Render Management ---
         function showView(viewName) {
             Object.values(views).forEach(v => v.classList.add('hidden'));
             views[viewName]?.classList.remove('hidden');
@@ -428,12 +419,9 @@ class AppController:
             const targetEl = document.getElementById(`word-${wordIndex}`);
             if (targetEl) {
                 targetEl.classList.add('target-word', 'bg-blue-100', 'text-blue-900', 'px-1', 'rounded', 'shadow-sm');
-                
-                // Teleprompter scrolling
                 const container = document.getElementById('reading-content');
                 const wordRect = targetEl.getBoundingClientRect();
                 const containerRect = container.getBoundingClientRect();
-                
                 const triggerPoint = containerRect.top + (containerRect.height * 0.66);
                 
                 if (wordRect.bottom > triggerPoint || wordRect.top < containerRect.top) {
@@ -504,8 +492,6 @@ class AppController:
             summaryViewInPane.classList.add('hidden');
             playbackControls.classList.remove('hidden');
             summaryButtons.classList.add('hidden');
-            
-            // Reset Play Button UI
             buttons.playPause.innerHTML = '▶ Start Listening';
             buttons.playPause.classList.replace('bg-yellow-500', 'bg-green-600');
             buttons.playPause.classList.replace('hover:bg-yellow-600', 'hover:bg-green-700');
@@ -514,7 +500,6 @@ class AppController:
 
         function processUpdates(updates) {
             if (!updates || !Array.isArray(updates)) return;
-            
             let newTargetIndex = null;
             for (const update of updates) {
                 if (!update) continue;
@@ -544,7 +529,7 @@ class AppController:
                         break;
                     case 'session_complete':
                         handleSessionEnd(update.data);
-                        return; // Prevent setting targets when complete
+                        return;
                 }
             }
             if (newTargetIndex !== null) {
@@ -568,32 +553,24 @@ class AppController:
              showSummaryView();
         }
         
-        // --- Speech Recognition (Chrome Optimized) ---
         function setupSpeechRecognition() {
-            // Exclusively targeting Chrome's webkit engine
             if (!window.webkitSpeechRecognition) {
                 initErrorMsg.textContent = "Error: This application requires Google Chrome to run the Speech Recognition engine.";
                 initErrorMsg.classList.remove('hidden'); loadingPyodideMsg.classList.add('hidden');
                 buttons.loadFile.disabled = true; return false;
             }
-            
             speechRecognition = new window.webkitSpeechRecognition();
             speechRecognition.continuous = true;
             speechRecognition.interimResults = true;
             speechRecognition.maxAlternatives = 1;
-            
             let lastProcessedTranscript = '';
-
             speechRecognition.onresult = (event) => {
                 if (!pythonApp.should_continue_listening()) return;
-
                 let transcript = '';
                 for (let i = 0; i < event.results.length; ++i) {
                     transcript += event.results[i][0].transcript;
                 }
-
                 const isFinal = event.results[event.results.length - 1].isFinal;
-                
                 let stablePart;
                 if (isFinal) {
                     stablePart = transcript;
@@ -601,7 +578,6 @@ class AppController:
                     const lastSpace = transcript.lastIndexOf(' ');
                     stablePart = (lastSpace === -1) ? '' : transcript.substring(0, lastSpace);
                 }
-
                 if (stablePart.length > lastProcessedTranscript.length) {
                     const toProcess = stablePart.substring(lastProcessedTranscript.length);
                     if(toProcess.trim()){
@@ -610,20 +586,16 @@ class AppController:
                     }
                     lastProcessedTranscript = stablePart;
                 }
-                
                 if (isFinal) {
                     lastProcessedTranscript = ''; 
                 }
             };
-            
             speechRecognition.onerror = (e) => { 
                 console.error('Speech recognition error', e.error);
-                // Handle silent dropouts if still meant to be listening
                 if (pythonApp.should_continue_listening() && e.error !== 'aborted') {
                    setTimeout(() => { try { speechRecognition.start(); } catch(err) {} }, 100);
                 }
             };
-            
             speechRecognition.onend = () => {
                 if(pythonApp?.should_continue_listening()) { 
                     setTimeout(() => { try { speechRecognition.start(); } catch(err) {} }, 50);
@@ -639,25 +611,18 @@ class AppController:
             speechSynthesis.speak(utterance);
         }
 
-        // --- Playback Controls Logic ---
         function togglePlayPause() {
             if (!speechRecognition || !pythonApp) return;
-
             const isCurrentlyListening = pythonApp.should_continue_listening();
-
             if (isCurrentlyListening) {
-                // Action: Pause
                 pythonApp.toggle_listening(false);
                 try { speechRecognition.stop(); } catch(e) {}
-                
                 buttons.playPause.innerHTML = '▶ Resume Listening';
                 buttons.playPause.classList.replace('bg-yellow-500', 'bg-green-600');
                 buttons.playPause.classList.replace('hover:bg-yellow-600', 'hover:bg-green-700');
             } else {
-                // Action: Play
                 pythonApp.toggle_listening(true);
                 try { speechRecognition.start(); } catch(e) {}
-                
                 buttons.playPause.innerHTML = '⏸ Pause';
                 buttons.playPause.classList.replace('bg-green-600', 'bg-yellow-500');
                 buttons.playPause.classList.replace('hover:bg-green-700', 'hover:bg-yellow-600');
@@ -674,25 +639,19 @@ class AppController:
             processUpdates(JSON.parse(updatesJsonString));
         }
 
-        // --- Event Handlers & Main Logic ---
         function startSessionFromText(text) {
             originalTextCache = text;
             speechRecognition.lang = languageSelect.value;
-
             const resultJsonString = pythonApp.start_new_session(text);
             const result = JSON.parse(resultJsonString);
-
             showView(result.view);
             initialRenderReadingContent(result.initial_render_data);
-            
             if (result.initial_target !== null) {
                 setTimeout(() => updateTargetIndicator(result.initial_target), 50);
             }
-            
             showInstructionsView();
         }
         
-        // Manual Override Click Handler
         readingContent.addEventListener('click', (e) => {
             if (e.target.classList.contains('reading-word')) {
                 const index = parseInt(e.target.dataset.textIndex, 10);
@@ -728,14 +687,11 @@ class AppController:
         });
 
         buttons.newFile.addEventListener('click', () => location.reload());
-        
         buttons.retry.addEventListener('click', () => {
             if (originalTextCache) {
                 startSessionFromText(originalTextCache);
             }
         });
-
-        // Attach new Playback handlers
         buttons.playPause.addEventListener('click', togglePlayPause);
         buttons.endSession.addEventListener('click', finishSessionManually);
 
@@ -746,7 +702,6 @@ class AppController:
                 pyodide.runPython(document.getElementById('python-code').textContent);
                 const AppController = pyodide.globals.get('AppController');
                 pythonApp = AppController();
-                
                 if (setupSpeechRecognition()) {
                     loadingPyodideMsg.style.display = 'none';
                     buttons.loadFile.disabled = false;
@@ -760,7 +715,6 @@ class AppController:
             }
         }
         
-        // Service Worker Registration
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {
                 navigator.serviceWorker.register('service-worker.js')
@@ -768,7 +722,6 @@ class AppController:
                     .catch(err => console.error('Service worker registration failed:', err));
             });
         }
-
         main();
     </script>
 </body>

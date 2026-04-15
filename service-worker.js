@@ -1,4 +1,4 @@
-const CACHE_NAME = 'prompted-reading-cache-v1';
+const CACHE_NAME = 'prompted-reading-cache-v2';
 const urlsToCache = [
     '/',
     './index.html',

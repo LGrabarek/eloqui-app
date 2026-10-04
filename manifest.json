@@ -1,6 +1,6 @@
 {
-"name": "Prompted Reading PWA",
-"short_name": "ReadApp",
+"name": "Eloqui",
+"short_name": "Eloqui",
 "description": "A local-first prompted reading application that works offline.",
 "start_url": "./index.html",
 "display": "standalone",

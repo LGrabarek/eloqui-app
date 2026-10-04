@@ -1,6 +1,7 @@
-const CACHE_NAME = 'prompted-reading-cache-v2';
+const CACHE_PREFIX = 'prompted-reading-cache-';
+const CACHE_NAME = CACHE_PREFIX + 'v3';
 const urlsToCache = [
-    '/',
+    './',
     './index.html',
     './manifest.json',
     './icon-192.png',
@@ -10,58 +11,40 @@ const urlsToCache = [
 self.addEventListener('install', event => {
     event.waitUntil(
         caches.open(CACHE_NAME)
-            .then(cache => {
-                console.log('Opened cache');
-                return cache.addAll(urlsToCache);
-            })
+            // cache: 'reload' bypasses GitHub Pages' 10-minute HTTP cache so a new worker never stores stale files
+            .then(cache => cache.addAll(urlsToCache.map(url => new Request(url, { cache: 'reload' }))))
+            .then(() => self.skipWaiting())
     );
 });
 
+// Network-first: deploys reach students once GitHub Pages' 10-minute HTTP cache expires; the cache is only an offline fallback.
 self.addEventListener('fetch', event => {
+    const request = event.request;
+    if (request.method !== 'GET' || new URL(request.url).origin !== self.location.origin) {
+        return;
+    }
     event.respondWith(
-        caches.match(event.request)
+        fetch(request)
             .then(response => {
-                // Cache hit - return response
-                if (response) {
-                    return response;
+                if (response.status === 200 && response.type === 'basic') {
+                    const responseToCache = response.clone();
+                    event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.put(request, responseToCache)));
                 }
-                // Clone the request because it's a stream and can only be consumed once.
-                const fetchRequest = event.request.clone();
-
-                return fetch(fetchRequest).then(
-                    response => {
-                        // Check if we received a valid response
-                        if (!response || response.status !== 200 || response.type !== 'basic') {
-                            return response;
-                        }
-                        
-                        // Clone the response because it's a stream and can only be consumed once.
-                        const responseToCache = response.clone();
-                        
-                        caches.open(CACHE_NAME)
-                            .then(cache => {
-                                cache.put(event.request, responseToCache);
-                            });
-
-                        return response;
-                    }
-                );
+                return response;
             })
+            .catch(() => caches.match(request))
     );
 });
 
 self.addEventListener('activate', event => {
-    const cacheWhitelist = [CACHE_NAME];
     event.waitUntil(
-        caches.keys().then(cacheNames => {
-            return Promise.all(
-                cacheNames.map(cacheName => {
-                    if (cacheWhitelist.indexOf(cacheName) === -1) {
-                        return caches.delete(cacheName);
-                    }
-                })
-            );
-        })
+        caches.keys()
+            .then(cacheNames => Promise.all(
+                // Other apps share the lgrabarek.github.io origin, so only delete this app's old caches
+                cacheNames
+                    .filter(name => name.startsWith(CACHE_PREFIX) && name !== CACHE_NAME)
+                    .map(name => caches.delete(name))
+            ))
+            .then(() => self.clients.claim())
     );
 });
-

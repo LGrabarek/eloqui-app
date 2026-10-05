@@ -1,7 +1,7 @@
 {
 "name": "Eloqui",
 "short_name": "Eloqui",
-"description": "A local-first prompted reading application that works offline.",
+"description": "Read-aloud practice that follows students word by word as they read. Requires an internet connection.",
 "start_url": "./index.html",
 "display": "standalone",
 "background_color": "#ffffff",

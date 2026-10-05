@@ -67,7 +67,7 @@ Eloqui's service worker loads the newest files from the network first and keeps 
 
 ## **5\. User Guide**
 
-1. **Open Eloqui:** Navigate to \[your GitHub Pages URL\] in Google Chrome.  
+1. **Open Eloqui:** Go to [https://lgrabarek.github.io/eloqui-app/](https://lgrabarek.github.io/eloqui-app/) in Google Chrome.  
 2. **Load Text:** Select the language and click the **Load Text File** link to select a .txt or .md file.  
 3. **Start Reading:** Click **Start Listening**. Read the words highlighted in **blue**.  
 4. **Review Progress:** Click **End & Summarize** to see accuracy metrics and trend charts.
